@@ -1,0 +1,26 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+artifacts/
+TestResults/
+
+# Local .NET and NuGet caches
+.dotnet/
+.nuget/
+.cache/
+
+# Editor state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local environment and macOS files
+.env
+.env.*
+!.env.example
+.DS_Store
+._*
