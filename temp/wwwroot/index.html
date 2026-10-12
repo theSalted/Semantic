@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Semantic</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <form id="match-form" class="query">
+      <input id="input" aria-label="Phrase to match" placeholder="Type a phrase" maxlength="1000" autocomplete="off" required autofocus>
+      <button type="submit" id="match-button">Match</button>
+    </form>
+    <output id="response" aria-label="Suggested response" aria-live="polite" hidden></output>
+    <form id="add-form">
+      <input id="prompt" aria-label="New prompt" placeholder="New prompt" maxlength="1000" autocomplete="off" required>
+      <input id="answer" aria-label="Response for new prompt" placeholder="Response" maxlength="8000" autocomplete="off" required>
+      <div class="actions">
+        <button type="submit" id="add-button">Add phrase</button>
+        <button type="button" id="import-button">Load phrases (.tsv)</button>
+        <input id="file" type="file" accept=".tsv,.txt,text/tab-separated-values" aria-label="Load phrase bank" hidden>
+      </div>
+    </form>
+    <p id="notice" role="status" hidden></p>
+    <p id="error" role="alert" hidden></p>
+    <div id="bank" role="region" aria-label="Phrase bank"></div>
+  </main>
+</body>
+</html>

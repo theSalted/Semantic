@@ -10,6 +10,14 @@ TestResults/
 /cmake-build-*/
 CMakeUserPresets.json
 
+# Local model weights
+/models/
+*.gguf
+
+# Local LIGHT data; redistribution rights remain unverified
+/experiments/light-traveler.tsv
+/experiments/light-traveler.source.json
+
 # Local .NET and NuGet caches
 .dotnet/
 .nuget/
