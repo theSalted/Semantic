@@ -4,6 +4,12 @@
 artifacts/
 TestResults/
 
+# Native build outputs and local CMake state
+/build/
+/build-*/
+/cmake-build-*/
+CMakeUserPresets.json
+
 # Local .NET and NuGet caches
 .dotnet/
 .nuget/
