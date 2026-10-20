@@ -18,4 +18,4 @@ if [[ ! -f ../models/embeddinggemma-2-Q8_0.gguf ]]; then
 fi
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
-exec "$semantic_dotnet" run --project Semantic.Playground.csproj --configuration Release --no-launch-profile
+exec "$semantic_dotnet" run --project Semantic.Playground.csproj --configuration Release --no-launch-profile -- "$@"

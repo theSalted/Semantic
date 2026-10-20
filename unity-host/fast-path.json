@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "minSimilarity": 0.99,
+  "minMargin": 0.06,
+  "eligiblePrompts": [
+    "I'll have a beer",
+    "I'll have an ale",
+    "I'll have whiskey",
+    "I'll have wine",
+    "Just water please",
+    "Do you have milk?",
+    "How much is a drink?",
+    "Where is your alcohol from?"
+  ]
+}

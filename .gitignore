@@ -38,3 +38,7 @@ CMakeUserPresets.json
 !.env.example
 .DS_Store
 ._*
+
+# Local generated evaluation transcripts include the existing LIGHT slice
+/experiments/history/dataset.jsonl
+__pycache__/

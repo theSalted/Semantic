@@ -14,14 +14,20 @@ builder.Configuration["AllowedHosts"] = "localhost;127.0.0.1";
 var root = Path.GetFullPath("..", builder.Environment.ContentRootPath);
 var libraryPath = Path.Combine(root, "build", "libSemantic.Native.dylib");
 var modelPath = Path.Combine(root, "models", "embeddinggemma-2-Q8_0.gguf");
-var bankPath = Path.GetFullPath(builder.Configuration["bank"] ?? Path.Combine(root, "experiments", "phrases.tsv"));
+var catalogPath = builder.Configuration["catalog"];
+if (catalogPath is not null && builder.Configuration["bank"] is not null)
+    throw new ArgumentException("Choose --bank or --catalog, not both.");
+var bankPath = Path.GetFullPath(catalogPath ?? builder.Configuration["bank"] ?? Path.Combine(root, "experiments", "phrases.tsv"));
 foreach (var required in new[] { libraryPath, modelPath, bankPath })
     if (!File.Exists(required)) throw new FileNotFoundException("Required matcher file is missing.", required);
 
 NativeLibrary.SetDllImportResolver(typeof(PhraseMatcher).Assembly, (name, _, _) =>
     name == "Semantic.Native" ? NativeLibrary.Load(libraryPath) : IntPtr.Zero);
 
-using var bank = new PhraseBank(modelPath, bankPath);
+using var bank = new PhraseBank(modelPath, bankPath, catalogPath is not null);
+var modelSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(modelPath)));
+var librarySha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(libraryPath)));
+using var methods = new LocalMethods(CharacterProfile.Load(builder.Configuration["character-profile"]), Path.Combine(root, "models", "Qwen3-14B-Q4_K_M.gguf"));
 var app = builder.Build();
 app.Use(async (context, next) =>
 {
@@ -39,7 +45,21 @@ app.Use(async (context, next) =>
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-app.MapPost("/api/match", (MatchRequest request) => Run(() => new { response = bank.Match(request.Input) }));
+app.MapGet("/api/methods", async (CancellationToken ct) => Results.Ok(new {
+    model = "embeddinggemma-2-Q8_0.gguf", modelSha256, librarySha256,
+    contextTokenBudget = 512, externalHistoryStorageBudget = 512,
+    backendRevision = "e937b17a2df081e9c7ae380f0dab4341c1585bce",
+    backend = "llama.cpp; CPU; float32 activations; mean pooling; sentence-similarity prefix",
+    character = methods.ProfileMetadata, methods = bank.AvailableMethods(await methods.Discover(ct))
+}));
+
+app.MapPost("/api/session", (SessionRequest request) => Run(() => bank.NewSession(request.MethodId)));
+app.MapPost("/api/respond", (RespondRequest request, CancellationToken ct) => RunAsync(() =>
+    bank.Respond(request.Input, request.SessionId, request.MethodId, request.RequestId, methods, request.Preview, ct)));
+app.MapPost("/api/close", (SessionRequest request) => Run(() => bank.Close(request.SessionId)));
+app.MapPost("/api/reset", (SessionRequest request) => Run(() => bank.Reset(request.SessionId)));
+app.MapPost("/api/match", (MatchRequest request) => Run(() => bank.Match(request.Input, request.SessionId, request.Mode, false)));
+app.MapPost("/api/preview", (MatchRequest request) => Run(() => bank.Match(request.Input, request.SessionId, request.Mode, true)));
 app.MapGet("/api/phrases", () => Run(() => bank.View()));
 app.MapPost("/api/phrases", (Phrase request) => Run(() => bank.Add([request])));
 app.MapPut("/api/phrases/{index:int}", (int index, EditRequest request) =>
@@ -58,7 +78,21 @@ static IResult Run(Func<object> action)
     { return Results.Json(new { error = "Could not read or save the phrase bank. " + error.Message }, statusCode: 500); }
 }
 
-record MatchRequest(string? Input);
+static async Task<IResult> RunAsync(Func<Task<object>> action)
+{
+    try { return Results.Ok(await action()); }
+    catch (OperationCanceledException) { return Results.Json(new { error = "Request cancelled, timed out or conversation reset. No reply was committed." }, statusCode: 409); }
+    catch (Exception error) when (error is ArgumentException or InvalidOperationException or FormatException)
+    { return Results.BadRequest(new { error = error.Message }); }
+    catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or KeyNotFoundException)
+    { return Results.Json(new { error = "Local method failed. No reply was committed. " + error.Message }, statusCode: 502); }
+    catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+    { return Results.Json(new { error = "Could not access the phrase bank. " + error.Message }, statusCode: 500); }
+}
+
+record SessionRequest(string? SessionId, string? MethodId);
+record RespondRequest(string? Input, string? SessionId, string? MethodId, string? RequestId, bool Preview = false);
+record MatchRequest(string? Input, string? SessionId, int Mode = 0);
 record ImportRequest(string? Tsv);
 record EditRequest(string? Prompt, string? Response, string? Revision);
 record DeleteRequest(string? Revision);

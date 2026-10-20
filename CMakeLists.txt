@@ -47,6 +47,9 @@ add_test(NAME Semantic.CoreChecks
 set(SEMANTIC_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/embeddinggemma-2-Q8_0.gguf"
     CACHE FILEPATH "Local EmbeddingGemma2 GGUF for the phrase experiment")
 if(EXISTS "${SEMANTIC_MODEL}")
+    add_executable(Semantic.PoolingChecks experiments/PoolingChecks.cpp)
+    target_link_libraries(Semantic.PoolingChecks PRIVATE Semantic llama)
+    add_test(NAME Semantic.PoolingChecks COMMAND Semantic.PoolingChecks "${SEMANTIC_MODEL}")
     add_test(NAME Semantic.PhraseMatch
         COMMAND Semantic.PhraseMatch "${SEMANTIC_MODEL}" "${CMAKE_CURRENT_SOURCE_DIR}/experiments/phrases.tsv")
 endif()
