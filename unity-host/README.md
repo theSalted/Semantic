@@ -12,9 +12,9 @@ unity-host/run-mac.sh /absolute/path/to/UnityProject
 
 This repository contains the framework and service, not the separate Unity project, scene, client components, authored bank or character profile. The paired Unity project must already contain the described `SemanticDialogue`/`HybridDialogueClient` components and `Assets/StreamingAssets/Semantic/pell-cask.tsv` plus `pell-cask.profile.json`. The test entrypoints below also belong to that separate project.
 
-Before launching, provide a current native build at `build/libSemantic.Native.dylib`, the installed .NET 10 SDK, a compatible llama.cpp server at `build-llm/bin/llama-server`, and the existing embedding and Qwen model files under `models/`. Binaries and weights are not included. The launcher does not provision these prerequisites.
+Before launching, provide a current native build at `build/libSemantic.Native.dylib`, the installed .NET 10 SDK, Python 3, a compatible llama.cpp server at `build-llm/bin/llama-server`, and the existing embedding and Qwen model files under `models/`. Binaries and weights are not included. The launcher does not provision these prerequisites.
 
-The launcher builds the host using the installed .NET 10 SDK, reuses the existing verified Qwen3-14B Q4_K_M model and `scripts/run-local-llm.sh`, waits for Qwen, and serves the bridge. No model is downloaded. Open the existing Unity project with 6000.6.2f1, open `Assets/Scenes/Playground.unity`, and press Play. `SemanticDialogue` on Canvas defaults to **Use Hybrid**, with endpoint `http://127.0.0.1:5192/`. Send using Reply or Enter. The original greeting is displayed locally; it is not inserted as an invented user exchange. **New conversation** cancels in-flight work, closes the old session, creates a new one and restores that greeting.
+The launcher builds the host using the installed .NET 10 SDK, uses the existing verified original Qwen3-4B Q4_K_M model by default and `scripts/run-local-llm.sh`, waits for Qwen, and serves the bridge. No model is downloaded. Open the existing Unity project with 6000.6.2f1, open `Assets/Scenes/Playground.unity`, and press Play. `SemanticDialogue` on Canvas defaults to **Use Hybrid**, with endpoint `http://127.0.0.1:5192/`. Send using Reply or Enter. The original greeting is displayed locally; it is not inserted as an invented user exchange. **New conversation** cancels in-flight work, closes the old session, creates a new one and restores that greeting.
 
 Keep the launcher terminal open during use. Ctrl-C stops its bridge and stops Qwen only if this launcher started Qwen. A previously running Qwen process is reused and never killed by this launcher. Play Mode exit closes its conversation on a best-effort basis; the service expires abandoned idle sessions after 30 minutes. Exiting Unity does not kill a shared service. Stop the launcher when finished to release model memory. Do not run competing local model workloads during use.
 
@@ -22,9 +22,21 @@ If the service is unavailable, the current subtitle shows an explicit error and 
 
 To use the previous offline matcher deliberately, clear **Use Hybrid** on Canvas before Play. It retains the original bundled native plugin and embedding model. Runtime mode switching is not supported.
 
-## Temporary 4B trial
+## Default 4B and optional 14B
 
-The production launcher above still uses 14B. An explicitly opt-in [4B trial and reproducible latency probes](../experiments/UnityLatency/README.md) build an isolated copy without editing Unity assets or the production host. The measured 4B candidate is faster on short replies but has known dialogue quality failures; it is not a production-approved replacement. The guide includes setup, model hash, measured limits and rollback.
+Normal launch now selects **original Qwen3-4B Q4_K_M**, not Instruct-2507, at the user's explicit choice. It uses `models/Qwen3-4B-Q4_K_M.gguf`, alias `semantic-qwen3-4b-q4km`, loopback port 5194, SHA256 `7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5`. Supply the already downloaded official file (or a local symlink to it); no weights are included or automatically downloaded. The known authored-choice and broader memory/grounding failures remain documented in [the measured results](../experiments/UnityLatency/RESULTS.md). Choosing it as the default does not claim those quality issues or a general p99 guarantee are solved.
+
+To deliberately use the previous 14B model:
+
+```sh
+bash unity-host/run-mac.sh /absolute/path/to/UnityProject --llm-size 14b
+```
+
+That selects `models/Qwen3-14B-Q4_K_M.gguf`, alias `semantic-qwen3-14b-q4km`, port 5191 and SHA256 `500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0`. The Unity bridge remains on 5192 in either case. `--llm-model /absolute/path/to/the-matching-filename.gguf` allows an external existing weight file. Unsupported sizes, mismatched filenames/hashes and wrong server aliases fail explicitly; there is no automatic fallback.
+
+Exit Play Mode and stop the current bridge deliberately before changing models; the launcher refuses an occupied bridge port and does not terminate the current conversation. A previously started model is reused only when its alias matches and is not owned/stopped by the new launcher. Switching services starts a fresh in-memory conversation. To return to 4B, omit `--llm-size` (or pass `--llm-size 4b`). An already running 4B game needs no restart merely because the startup default changed.
+
+`--print-config` reports the selected model without starting services. `--build-only` compiles without starting services, and `--port 5193` selects a separate bridge for deliberate tests. Do not run inference probes alongside live gameplay. See [the reproducible probes](../experiments/UnityLatency/README.md).
 
 ## Behavior and limits
 
@@ -36,7 +48,7 @@ Framework history remains bounded to 512 EmbeddingGemma tokens and at most 16 co
 
 ## Latency and conservative retrieval path
 
-The Unity host opts into compact Qwen decisions: an authored selection emits only `selected_id`; generated output contains `response` and `used_fact_ids`. The shared implementation normalizes this to the original decision contract. Other callers retain the original format by default. Prompt JSON avoids unnecessary Unicode escaping while preserving the same decoded text. The model, 12-candidate retrieval, history limits, 8192-token context and 512-token output ceiling are unchanged. Thinking was already disabled; the ceiling is not a requirement to generate 512 tokens. Qwen used all 41 GPU layers on the tested Mac and its existing prefix cache remains enabled.
+The Unity host opts into compact Qwen decisions: an authored selection emits only `selected_id`; generated output contains `response` and `used_fact_ids`. The shared implementation normalizes this to the original decision contract. Other callers retain the original format by default. Prompt JSON avoids unnecessary Unicode escaping while preserving the same decoded text. The 12-candidate retrieval, history limits, 8192-token context and 512-token output ceiling are unchanged by the model choice. Thinking was already disabled; the ceiling is not a requirement to generate 512 tokens. Qwen used all 37 layers for 4B (41 for optional 14B) on the tested Mac and its existing prefix cache remains enabled.
 
 `unity-host/fast-path.json` controls `enabled`, `minSimilarity`, `minMargin`, and the reviewed `eligiblePrompts`. Defaults require all of:
 
@@ -76,4 +88,6 @@ No comparative benchmark, unfinished Chandler bank or trained paper method is us
 
 ## Windows
 
-The Unity client uses portable C# / HttpClient and does not require an updated native plugin in hybrid mode. The .NET host accepts `--native-library /path/to/Semantic.Native.dll`, and its default library name accommodates Windows. However, Windows needs a **current source-built** native library with the new session APIs, all required native dependencies, .NET 10, and a separately configured Windows llama.cpp server with alias `semantic-qwen3-14b-q4km`, port 5191, 8192 context and one slot. The existing Unity Windows DLL is for the legacy matcher and is not asserted to support the new host. `run-mac.sh` and the existing Metal launcher are Mac-only. No Windows build or Windows execution is claimed.
+The Unity client uses portable C# / HttpClient and does not require an updated native plugin in hybrid mode. The .NET host accepts `--native-library /path/to/Semantic.Native.dll`, and its default library name accommodates Windows. However, Windows needs a **current source-built** native library with the new session APIs, all required native dependencies, .NET 10, and a separately configured Windows llama.cpp server with default alias `semantic-qwen3-4b-q4km`, port 5194 (or matching 14B alias/5191 with `--llm-size 14b`), 8192 context and one slot. The existing Unity Windows DLL is for the legacy matcher and is not asserted to support the new host. `run-mac.sh` and the existing Metal launcher are Mac-only. No Windows build or Windows execution is claimed.
+
+Model configuration checks (fake HTTP, no inference): `dotnet run --project experiments/MethodChecks -c Release -- "$PWD" --config-only`. These verify default/explicit model resolution in both shell launchers and C#, request/provenance identity, wrong-server rejection and model-hash rejection.

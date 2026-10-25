@@ -22,7 +22,8 @@ using var source = new TaggedBank(bankPath);
 var fastSettings = RetrievalFastPath.Load(builder.Configuration["fast-path-config"] ?? Path.Combine(root, "unity-host", "fast-path.json"));
 var fastPath = new RetrievalFastPath(fastSettings, source.Rows.GroupBy(r => RetrievalFastPath.Normalize(r[0])).Where(g => g.Select(r => (r[1], r[2])).Distinct().Count() > 1).Select(g => g.Key));
 using var bank = new PhraseBank(Path.Combine(root, "models", "embeddinggemma-2-Q8_0.gguf"), source.Projection, sessionMemory: true, fastPath: fastPath);
-using var methods = new LocalMethods(CharacterProfile.Load(profilePath), Path.Combine(root, "models", "Qwen3-14B-Q4_K_M.gguf"), compactHybrid: true);
+var llmModel = LocalModel.Resolve(builder.Configuration["llm-size"]);
+using var methods = new LocalMethods(CharacterProfile.Load(profilePath), llmModel.ModelPath(root, builder.Configuration["llm-model"]), compactHybrid: true);
 var app = builder.Build();
 app.Use(async (context, next) =>
 {

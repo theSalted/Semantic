@@ -28,14 +28,41 @@ record CharacterProfile(string Name, string Style, string Scene, string Era, Cha
     }
 }
 
+// Only the two verified local GGUFs are supported. No automatic model substitution.
+sealed record LocalModel(string Size, string FileName, string Alias, string Sha256, int Port)
+{
+    public static readonly LocalModel FourB = new("4b", "Qwen3-4B-Q4_K_M.gguf", "semantic-qwen3-4b-q4km",
+        "7485FE6F11AF29433BC51CAB58009521F205840F5B4AE3A32FA7F92E8534FDF5", 5194);
+    public static readonly LocalModel FourteenB = new("14b", "Qwen3-14B-Q4_K_M.gguf", "semantic-qwen3-14b-q4km",
+        "500A8806E85EE9C83F3AE08420295592451379B4F8CF2D0F41C15DFFEB6B81F0", 5191);
+    public static LocalModel Resolve(string? size) => size switch
+    {
+        null or "4b" => FourB,
+        "14b" => FourteenB,
+        _ => throw new ArgumentException("--llm-size must be 4b (default) or 14b.")
+    };
+    public static LocalModel FromPath(string path) => Path.GetFileName(path) switch
+    {
+        "Qwen3-4B-Q4_K_M.gguf" => FourB,
+        "Qwen3-14B-Q4_K_M.gguf" => FourteenB,
+        _ => throw new ArgumentException("Unsupported local Qwen model filename.")
+    };
+    public string ModelPath(string root, string? supplied = null)
+    {
+        var path = Path.GetFullPath(supplied ?? Path.Combine(root, "models", FileName));
+        if (Path.GetFileName(path) != FileName) throw new ArgumentException("--llm-model filename must match --llm-size.");
+        return path;
+    }
+}
+
 // Stateless adapters. Session ownership, reset, rendering and commit live in PhraseBank.
 sealed class LocalMethods : IDisposable
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions PromptJson = new(Json) { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private readonly bool compactHybrid;
-    internal const string ModelId = "semantic-qwen3-14b-q4km";
-    internal const string ExpectedModelHash = "500A8806E85EE9C83F3AE08420295592451379B4F8CF2D0F41C15DFFEB6B81F0";
+    private readonly LocalModel model;
+    private string ModelId => model.Alias;
     private readonly HttpClient llm;
     private readonly HttpClient paper;
     private readonly SemaphoreSlim generation = new(1, 1);
@@ -45,13 +72,14 @@ sealed class LocalMethods : IDisposable
     private static readonly string[] PaperIds = ["light_biranker", "poly_encoder", "cross_encoder", "smn", "dial_mae", "sa_bert"];
     public LocalMethods(CharacterProfile profile, string modelPath, HttpMessageHandler? llmHandler = null, HttpMessageHandler? paperHandler = null, bool compactHybrid = false)
     {
+        model = LocalModel.FromPath(modelPath);
         this.profile = profile;
         this.compactHybrid = compactHybrid;
         profileHash = Hash(JsonSerializer.Serialize(profile, Json));
         if (File.Exists(modelPath)) { using var stream = File.OpenRead(modelPath); modelHash = Convert.ToHexString(SHA256.HashData(stream)); }
         llm = llmHandler is null ? new HttpClient() : new HttpClient(llmHandler);
         paper = paperHandler is null ? new HttpClient() : new HttpClient(paperHandler);
-        llm.BaseAddress = new Uri("http://127.0.0.1:5191");
+        llm.BaseAddress = new Uri($"http://127.0.0.1:{model.Port}");
         paper.BaseAddress = new Uri("http://127.0.0.1:8091");
         llm.Timeout = TimeSpan.FromMinutes(3); paper.Timeout = TimeSpan.FromMinutes(10);
     }
@@ -78,12 +106,12 @@ sealed class LocalMethods : IDisposable
     }
     private async Task<(int Context, string Build)> LlmProperties(CancellationToken ct)
     {
-        if (modelHash != ExpectedModelHash) throw new InvalidOperationException("The verified Qwen3-14B Q4_K_M model file is missing or changed.");
+        if (modelHash != model.Sha256) throw new InvalidOperationException($"The verified {model.FileName} model file is missing or changed.");
         var models = await Read(await llm.GetAsync("/v1/models", ct), ct);
         if (!models.GetProperty("data").EnumerateArray().Any(x => x.GetProperty("id").GetString() == ModelId))
-            throw new InvalidOperationException("Port 5191 is not serving the configured Qwen model alias.");
+            throw new InvalidOperationException($"Port {model.Port} is not serving the configured Qwen model alias {model.Alias}.");
         var props = await Read(await llm.GetAsync("/props", ct), ct);
-        if (Path.GetFileName(props.GetProperty("model_path").GetString()) != "Qwen3-14B-Q4_K_M.gguf")
+        if (Path.GetFileName(props.GetProperty("model_path").GetString()) != model.FileName)
             throw new InvalidOperationException("The Qwen server loaded an unexpected model path.");
         var limit = props.GetProperty("default_generation_settings").GetProperty("n_ctx").GetInt32();
         if (limit < 1024) throw new InvalidOperationException("Qwen context is too small.");
