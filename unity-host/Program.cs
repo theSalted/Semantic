@@ -24,6 +24,9 @@ var fastPath = new RetrievalFastPath(fastSettings, source.Rows.GroupBy(r => Retr
 using var bank = new PhraseBank(Path.Combine(root, "models", "embeddinggemma-2-Q8_0.gguf"), source.Projection, sessionMemory: true, fastPath: fastPath);
 var llmModel = LocalModel.Resolve(builder.Configuration["llm-size"]);
 using var methods = new LocalMethods(CharacterProfile.Load(profilePath), llmModel.ModelPath(root, builder.Configuration["llm-model"]), compactHybrid: true);
+var instanceId = Guid.NewGuid().ToString("N");
+var ownerId = builder.Configuration["owner-id"] ?? "";
+var profileHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(profilePath)));
 var app = builder.Build();
 app.Use(async (context, next) =>
 {
@@ -32,7 +35,24 @@ app.Use(async (context, next) =>
     if (context.Request.Headers.Origin.Count > 0) { context.Response.StatusCode = 403; return; }
     await next(context);
 });
-app.MapGet("/health", () => Execute(() => new { ready = true, protocol = 1, bankSha256 = source.Check(), rows = source.Rows.Length, methodId = "hybrid" }));
+app.MapGet("/health", async (CancellationToken ct) =>
+{
+    string? failure = null;
+    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+    timeout.CancelAfter(TimeSpan.FromSeconds(2));
+    try
+    {
+        source.Check();
+        if (Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(profilePath))) != profileHash)
+            throw new InvalidOperationException("Character profile changed. Stop this host deliberately and restart it with the current profile.");
+        await methods.CheckLlmReady(timeout.Token);
+    }
+    catch (Exception error) when (error is HttpRequestException or OperationCanceledException or InvalidOperationException or JsonException or IOException or KeyNotFoundException)
+    { failure = error is OperationCanceledException ? "Qwen readiness timed out." : error.Message; }
+    return Results.Json(new { service = "semantic-unity", ready = failure is null, protocol = 1, instanceId,
+        processId = Environment.ProcessId, ownerId, bankSha256 = source.Hash, profileSha256 = profileHash,
+        modelAlias = llmModel.Alias, rows = source.Rows.Length, methodId = "hybrid", error = failure }, statusCode: failure is null ? 200 : 503);
+});
 app.MapPost("/api/session", (SessionRequest request) => Execute(() =>
 {
     source.Check(request.BankSha256);

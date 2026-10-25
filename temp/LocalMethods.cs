@@ -117,6 +117,12 @@ sealed class LocalMethods : IDisposable
         if (limit < 1024) throw new InvalidOperationException("Qwen context is too small.");
         return (Math.Min(8192, limit), props.GetProperty("build_info").GetString() ?? "unknown");
     }
+    internal async Task CheckLlmReady(CancellationToken ct)
+    {
+        var health = await Read(await llm.GetAsync("/health", ct), ct);
+        if (health.GetProperty("status").GetString() != "ok") throw new InvalidOperationException("Qwen is still loading.");
+        await LlmProperties(ct);
+    }
     public async Task<MethodInfo[]> Discover(CancellationToken ct)
     {
         var results = new List<MethodInfo> {
