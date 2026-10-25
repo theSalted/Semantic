@@ -22,6 +22,10 @@ If the service is unavailable, the current subtitle shows an explicit error and 
 
 To use the previous offline matcher deliberately, clear **Use Hybrid** on Canvas before Play. It retains the original bundled native plugin and embedding model. Runtime mode switching is not supported.
 
+## Temporary 4B trial
+
+The production launcher above still uses 14B. An explicitly opt-in [4B trial and reproducible latency probes](../experiments/UnityLatency/README.md) build an isolated copy without editing Unity assets or the production host. The measured 4B candidate is faster on short replies but has known dialogue quality failures; it is not a production-approved replacement. The guide includes setup, model hash, measured limits and rollback.
+
 ## Behavior and limits
 
 Latest-input-only embedding retrieval supplies up to 12 authored candidates. Unless the conservative fast path below passes, Qwen receives those candidates, bounded **actual** user/character exchanges and `Assets/StreamingAssets/Semantic/pell-cask.profile.json`. The small profile derives name, bar ownership, drinks and duty behavior from the existing bank; it supplies no invented era. Authored selections preserve exact text and tags. Generated replies have null authored ID/tag and reset the cube's prior color to neutral without claiming an authored Neutral tag.
