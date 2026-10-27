@@ -10,7 +10,17 @@ int main(int argc, char** argv)
     try
     {
         if (argc != 2) throw std::runtime_error("Pass the local model path.");
-        struct Backend { Backend() { llama_backend_init(); } ~Backend() { llama_backend_free(); } } backend;
+        struct Backend
+        {
+            Backend()
+            {
+#if defined(GGML_BACKEND_DL)
+                ggml_backend_load_all(); // Windows: the CPU backend is a DLL beside this executable.
+#endif
+                llama_backend_init();
+            }
+            ~Backend() { llama_backend_free(); }
+        } backend;
         auto mp = llama_model_default_params();
         ggml_backend_dev_t cpu_only[] = {nullptr};
         mp.devices = cpu_only; mp.n_gpu_layers = 0;

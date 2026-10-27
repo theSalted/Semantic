@@ -26,11 +26,10 @@ static class ModelConfigChecks
         {
             Check(LocalModel.Resolve(model.Size) == model, "Explicit size resolves");
             Check(LocalModel.FromPath(model.ModelPath(root)) == model, "Legacy constructor path retains model identity");
-            foreach (var launcher in new[] { "scripts/run-local-llm.sh", "unity-host/run-mac.sh" })
+            foreach (var launcher in new[] { "scripts/run-local-llm.sh" })
             {
                 var start = new ProcessStartInfo("/bin/bash") { RedirectStandardOutput = true, RedirectStandardError = true };
                 start.ArgumentList.Add(Path.Combine(root, launcher));
-                if (launcher.StartsWith("unity-host")) start.ArgumentList.Add("/unused-config-only-project");
                 // Omission must select 4B; 14B requires an explicit argument.
                 if (model == LocalModel.FourteenB) { start.ArgumentList.Add("--llm-size"); start.ArgumentList.Add(model.Size); }
                 start.ArgumentList.Add("--print-config");

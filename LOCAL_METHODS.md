@@ -1,6 +1,6 @@
 # Local method integration
 
-The playground adapters preserve explicit framework sessions. The checks below verify implementation plumbing, not conversation quality. The framework and Unity host are included; optional paper-model implementations, training jobs, datasets, model weights and raw evaluation artifacts are not part of this release. See `unity-host/README.md` for the hybrid Unity service and its external project requirements.
+The playground adapters preserve explicit framework sessions. The checks below verify implementation plumbing, not conversation quality. The framework is included; optional paper-model implementations, training jobs, datasets, model weights and raw evaluation artifacts are not part of this release. Unity uses hybrid mode in-process through the native plugin; see `HYBRID.md`.
 
 ## Run
 

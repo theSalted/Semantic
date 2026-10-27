@@ -1,6 +1,8 @@
 # Unity full-completion latency probes
 
-The measured **original Qwen3-4B Q4_K_M is now the normal default**, by explicit user choice after the in-game trial. It still has known dialogue quality failures. See [RESULTS.md](RESULTS.md) for timing boundaries and limitations and [the Unity host guide](../../unity-host/README.md) for normal startup, explicit 14B fallback and model provenance.
+The measured **original Qwen3-4B Q4_K_M is now the normal default**, by explicit user choice after the in-game trial. It still has known dialogue quality failures. See [RESULTS.md](RESULTS.md) for timing boundaries and limitations.
+
+> Historical: these probes measured the retired `unity-host` HTTP bridge. Unity now runs hybrid mode in-process through the native plugin (see [HYBRID.md](../../HYBRID.md)), so the bridge-based scripts here no longer have a service to measure.
 
 `run-4b-trial-mac.sh` remains as a compatibility wrapper around the normal launcher: it explicitly chooses 4B and accepts the existing external-model-path arguments. It no longer patches or copies runtime source. The old isolated preparation/patch and source hashes remain in Git commit `ba0fb87b92181d9d5ff4d17dc6415c152238f8a1` for reproducing that historical build. Its prompt, retrieval, memory and emote behavior are unchanged by promoting the model to the default.
 

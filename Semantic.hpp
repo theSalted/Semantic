@@ -22,6 +22,7 @@ namespace Semantic
         std::string prompt;
         std::string response;
         Embedding embedding;
+        std::string emote_tag;
     };
 
     inline bool IsBlank(const std::string& text)
@@ -29,7 +30,7 @@ namespace Semantic
         return text.find_first_not_of(" \t\r\n") == std::string::npos;
     }
 
-    // UTF-8 TSV: a prompt<TAB>response header, then one pair per line.
+    // UTF-8 TSV: prompt<TAB>response, optionally followed by <TAB>emote_tag.
     // Tabs and newlines inside fields are deliberately not supported.
     inline std::vector<Phrase> LoadPhraseBank(const std::string& filename)
     {
@@ -41,8 +42,9 @@ namespace Semantic
             if (!line.empty() && line.back() == '\r') line.pop_back();
             return true;
         };
-        if (!next_line() || line != "prompt\tresponse")
-            throw std::runtime_error("Phrase bank must start with prompt<TAB>response.");
+        if (!next_line() || (line != "prompt\tresponse" && line != "prompt\tresponse\temote_tag"))
+            throw std::runtime_error("Phrase bank must start with prompt<TAB>response[<TAB>emote_tag].");
+        const bool has_tags = line == "prompt\tresponse\temote_tag";
 
         std::vector<Phrase> phrases;
         std::size_t line_number = 1;
@@ -51,12 +53,16 @@ namespace Semantic
             ++line_number;
             if (IsBlank(line)) continue;
             const auto tab = line.find('\t');
-            if (tab == std::string::npos || line.find('\t', tab + 1) != std::string::npos ||
+            const auto tag_tab = tab == std::string::npos ? std::string::npos : line.find('\t', tab + 1);
+            if (tab == std::string::npos || (has_tags ? tag_tab == std::string::npos : tag_tab != std::string::npos) ||
+                (tag_tab != std::string::npos && line.find('\t', tag_tab + 1) != std::string::npos) ||
                 line.find('\0') != std::string::npos)
                 throw std::runtime_error("Invalid phrase bank row " + std::to_string(line_number));
-            Phrase phrase{line.substr(0, tab), line.substr(tab + 1), {}};
-            if (IsBlank(phrase.prompt) || IsBlank(phrase.response))
-                throw std::runtime_error("Empty prompt or response on row " + std::to_string(line_number));
+            Phrase phrase{line.substr(0, tab),
+                line.substr(tab + 1, has_tags ? tag_tab - tab - 1 : std::string::npos), {},
+                has_tags ? line.substr(tag_tab + 1) : ""};
+            if (IsBlank(phrase.prompt) || IsBlank(phrase.response) || (has_tags && IsBlank(phrase.emote_tag)))
+                throw std::runtime_error("Empty prompt, response, or emote tag on row " + std::to_string(line_number));
             phrases.push_back(std::move(phrase));
         }
         if (file.bad()) throw std::runtime_error("Could not read phrase bank: " + filename);
