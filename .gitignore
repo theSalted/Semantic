@@ -1,44 +1,23 @@
-# Build outputs
-[Bb]in/
-[Oo]bj/
-artifacts/
-TestResults/
-
 # Native build outputs and local CMake state
 /build/
 /build-*/
 /cmake-build-*/
 CMakeUserPresets.json
 
+# Local workspace data (paper-method artifacts, checkpoints)
+/artifacts/
+
 # Local model weights
 /models/
 *.gguf
-
-# Local LIGHT data; redistribution rights remain unverified
-/experiments/light-traveler.tsv
-/experiments/light-traveler.source.json
-
-# Local .NET and NuGet caches
-.dotnet/
-.nuget/
-.cache/
 
 # Editor state
 .vs/
 .vscode/
 .idea/
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
 
 # Local environment and macOS files
 .env
 .env.*
-!.env.example
 .DS_Store
 ._*
-
-# Local generated evaluation transcripts include the existing LIGHT slice
-/experiments/history/dataset.jsonl
-__pycache__/

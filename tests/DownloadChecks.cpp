@@ -2,7 +2,7 @@
 // Usage: Semantic.DownloadChecks <url> <reference-file> <scratch-dir>
 // Seeds a partial file with the first half of the reference, resumes from the URL, and
 // requires a byte-identical result. The scratch directory stands in for the user cache.
-#include "SemanticDownload.hpp"
+#include "../Semantic.cpp"
 #include <cassert>
 #include <fstream>
 #include <iostream>

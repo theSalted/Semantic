@@ -1,8 +1,8 @@
 // Real-model checks through the C API.
-// Usage: Semantic.HybridSmoke <embedding.gguf> <tagged-bank.tsv>
+// Usage: Semantic.Smoke <embedding.gguf> <tagged-bank.tsv>
 // Retrieval and preparation always run. Hybrid turns also run when SEMANTIC_HYBRID_CONFIG
 // names a hybrid config and SEMANTIC_HYBRID_BANK its bank (the chat model may download first).
-#include "Semantic.Native.h"
+#include "../Semantic.h"
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
