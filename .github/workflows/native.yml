@@ -7,23 +7,17 @@ on:
   push:
     branches: [main]
     paths:
-      - 'Semantic.hpp'
-      - 'SemanticHybrid.hpp'
-      - 'bindings/*.cpp'
-      - 'bindings/*.h'
-      - 'bindings/*.hpp'
-      - 'experiments/*.cpp'
+      - 'Semantic.h'
+      - 'Semantic.cpp'
+      - 'tests/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/native.yml'
   pull_request:
     paths:
-      - 'Semantic.hpp'
-      - 'SemanticHybrid.hpp'
-      - 'bindings/*.cpp'
-      - 'bindings/*.h'
-      - 'bindings/*.hpp'
-      - 'experiments/*.cpp'
+      - 'Semantic.h'
+      - 'Semantic.cpp'
+      - 'tests/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/native.yml'

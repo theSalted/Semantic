@@ -1,8 +1,17 @@
-#include "SemanticHybrid.hpp"
+// Model-free checks of the retrieval core and hybrid-mode logic (no models are loaded).
+// Usage: Semantic.Checks <phrases.tsv> <tagged-phrases.tsv>
+#include "../Semantic.cpp"
 #include <cassert>
 #include <iostream>
 
 using namespace Semantic::Hybrid;
+
+template<class F> void MustFail(F operation)
+{
+    try { operation(); }
+    catch (const std::exception&) { return; }
+    throw std::runtime_error("Expected failure was not reported.");
+}
 
 static std::string Value(const std::vector<PlayerFact>& facts, const std::string& key)
 {
@@ -10,8 +19,42 @@ static std::string Value(const std::vector<PlayerFact>& facts, const std::string
     return fact ? fact->value : "";
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    assert(argc == 3);
+    // ---- Retrieval core
+    {
+        auto bank = Semantic::LoadPhraseBank(argv[1]);
+        assert(bank.size() == 6 && bank[0].prompt == "how are you" && bank[0].response == "I am fine thank you" && bank[0].emote_tag.empty());
+        auto tagged = Semantic::LoadPhraseBank(argv[2]); // Optional third column: each row keeps its own tag.
+        assert(tagged.size() == 5 && tagged[0].emote_tag == "Happy" && tagged[2].emote_tag == "Calm");
+        MustFail([] { Semantic::LoadPhraseBank("__missing_semantic_bank__.tsv"); });
+        MustFail([] { Semantic::Normalize({}); });
+        MustFail([] { Semantic::Normalize({0, 0}); });
+        MustFail([] { Semantic::Normalize({std::numeric_limits<float>::quiet_NaN()}); });
+        MustFail([] { Semantic::Normalize({std::numeric_limits<float>::infinity()}); });
+        float score;
+        MustFail([&] { Semantic::BestMatch({}, {1}, score); });
+        MustFail([&] { Semantic::BestMatch({{"a", "A", {1, 0}}}, {1}, score); });
+        std::vector<Semantic::Phrase> tiny{{"a", "A", {100, 0}}, {"b", "B", {0, 3}}};
+        assert(Semantic::BestMatch(tiny, {0, 200}, score).response == "B" && std::abs(score - 1) < 0.00001); // Cosine normalization.
+        tiny[0].embedding = {-1, 0};
+        tiny[1].embedding = {-1, 1};
+        assert(Semantic::BestMatch(tiny, {1, 0}, score).response == "B" && score < 0); // Negative similarities still rank.
+        auto ranked = Semantic::TopMatches(tiny, {1, 0}, 8);
+        assert(ranked.size() == 2 && ranked[0].index == 1 && ranked[1].index == 0);
+        MustFail([&] { Semantic::TopMatches(tiny, {1, 0}, 0); });
+        MustFail([&] { Semantic::TopMatches(tiny, {1}, 2); });
+        tiny[0].embedding = tiny[1].embedding;
+        assert(Semantic::TopMatches(tiny, {1, 0}, 2)[0].index == 0); // Ties preserve bank order.
+        int embeddings_seen = 0;
+        MustFail([&] { Semantic::EmbedPrompts(tiny, [&](const std::string&) {
+            return ++embeddings_seen == 1 ? Semantic::Embedding{1} : Semantic::Embedding{1, 0};
+        }); });
+    }
+
+    // ---- Hybrid mode
+
     // Explicit declarations, corrections and removal.
     auto memory = AdvanceMemory({}, "Hello! My name is Mira.");
     assert(Value(memory, "name") == "Mira");
@@ -90,5 +133,5 @@ int main()
     try { Validate(profile, request, R"({"response":"Your name is Bob.","used_fact_ids":[]})"); } catch (const std::runtime_error&) { threw = true; }
     assert(threw);
 
-    std::cout << "Hybrid checks passed\n";
+    std::cout << "Checks passed\n";
 }

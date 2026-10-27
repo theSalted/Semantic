@@ -1,21 +1,17 @@
 cmake_minimum_required(VERSION 3.24)
 project(Semantic LANGUAGES CXX)
 
-# cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSEMANTIC_BUILD_INTEROP_SMOKE=ON
-# cmake --build build --config Release
-# ctest --test-dir build -C Release --output-on-failure
-# Run scripts/download-model.sh before configuring to enable real embedding checks.
+# Semantic.h is the API; Semantic.cpp is the implementation, built as the Semantic.Native plugin.
+#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build --config Release
+#   ctest --test-dir build -C Release --output-on-failure
+# Run scripts/download-model.sh before configuring to add the model-backed smoke test.
 
-add_library(Semantic INTERFACE)
-target_include_directories(Semantic INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_features(Semantic INTERFACE cxx_std_17)
-
-# Distributable plugin builds (CI, Unity) avoid host-specific CPU features.
 option(SEMANTIC_PORTABLE "Build for redistribution rather than this machine's CPU" OFF)
 option(SEMANTIC_CUDA "Windows: include the CUDA backend and runtime (~1.15 GB)" ON)
 
-# llama.cpp release b11560: the previous source pin minus one Hexagon-only commit. macOS builds
-# it from source into one static dylib; Windows uses the release's prebuilt DLLs unchanged.
+# llama.cpp release b11560. macOS builds it from source into one static dylib; Windows uses the
+# release's prebuilt DLLs unchanged (cmake/LlamaRelease.cmake) and compiles only Semantic.
 set(SEMANTIC_LLAMA_TAG b11560)
 set(SEMANTIC_LLAMA_COMMIT b13a93a3d5fa44b57899d86467a4de463e7415a7)
 set(SEMANTIC_LLAMA_SOURCE_SHA256 3d89883ba9020aef07c14371f884564f4b3177b9ff8c442b34de276f817ef835)
@@ -50,29 +46,29 @@ else()
         endforeach()
         set(GGML_CPU_ARM_ARCH armv8-a CACHE STRING "" FORCE)
     endif()
-    set(LLAMA_BUILD_COMMON OFF)
-    set(LLAMA_BUILD_TESTS OFF)
-    set(LLAMA_BUILD_TOOLS OFF)
-    set(LLAMA_BUILD_EXAMPLES OFF)
-    set(LLAMA_BUILD_SERVER OFF)
-    set(LLAMA_BUILD_APP OFF)
+    foreach(part COMMON TESTS TOOLS EXAMPLES SERVER APP)
+        set(LLAMA_BUILD_${part} OFF)
+    endforeach()
     FetchContent_MakeAvailable(llama_cpp)
+    find_package(CURL REQUIRED)
 endif()
 
-add_library(Semantic.Native SHARED bindings/Semantic.Native.cpp)
+# Platform dependencies shared by the plugin and the checks that compile Semantic.cpp directly.
+add_library(Semantic.Dependencies INTERFACE)
 # nlohmann/json ships in llama.cpp's vendor tree; no separate dependency.
-target_include_directories(Semantic.Native PRIVATE "${llama_cpp_SOURCE_DIR}/vendor")
-target_link_libraries(Semantic.Native PRIVATE Semantic llama)
-target_compile_definitions(Semantic.Native PRIVATE SEMANTIC_NATIVE_BUILD)
+target_include_directories(Semantic.Dependencies INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}" "${llama_cpp_SOURCE_DIR}/vendor")
+target_link_libraries(Semantic.Dependencies INTERFACE llama)
+target_compile_features(Semantic.Dependencies INTERFACE cxx_std_17)
 if(WIN32)
-    target_link_libraries(Semantic.Native PRIVATE winhttp)
-    target_compile_definitions(Semantic.Native PRIVATE SEMANTIC_BACKEND_DL)
-    set_target_properties(Semantic.Native PROPERTIES PREFIX "")
-    semantic_copy_runtime(Semantic.Native)
+    target_link_libraries(Semantic.Dependencies INTERFACE winhttp)
+    target_compile_definitions(Semantic.Dependencies INTERFACE SEMANTIC_BACKEND_DL)
 else()
-    find_package(CURL REQUIRED)
-    target_link_libraries(Semantic.Native PRIVATE CURL::libcurl)
+    target_link_libraries(Semantic.Dependencies INTERFACE CURL::libcurl)
 endif()
+
+add_library(Semantic.Native SHARED Semantic.cpp)
+target_link_libraries(Semantic.Native PRIVATE Semantic.Dependencies)
+target_compile_definitions(Semantic.Native PRIVATE SEMANTIC_NATIVE_BUILD)
 set_target_properties(Semantic.Native PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES
@@ -80,68 +76,31 @@ set_target_properties(Semantic.Native PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES
 )
-
-add_executable(Semantic.PhraseMatch experiments/PhraseMatch.cpp)
-target_link_libraries(Semantic.PhraseMatch PRIVATE Semantic Semantic.Native)
-add_executable(Semantic.CoreChecks experiments/CoreChecks.cpp)
-target_link_libraries(Semantic.CoreChecks PRIVATE Semantic)
-add_executable(Semantic.HybridChecks experiments/HybridChecks.cpp)
-target_include_directories(Semantic.HybridChecks PRIVATE "${llama_cpp_SOURCE_DIR}/vendor")
-target_link_libraries(Semantic.HybridChecks PRIVATE Semantic)
-add_executable(Semantic.HybridSmoke experiments/HybridSmoke.cpp)
-target_include_directories(Semantic.HybridSmoke PRIVATE bindings)
-target_link_libraries(Semantic.HybridSmoke PRIVATE Semantic.Native)
-add_executable(Semantic.DownloadChecks experiments/DownloadChecks.cpp)
-target_include_directories(Semantic.DownloadChecks PRIVATE bindings)
 if(WIN32)
-    target_link_libraries(Semantic.DownloadChecks PRIVATE winhttp)
-else()
-    target_link_libraries(Semantic.DownloadChecks PRIVATE CURL::libcurl)
+    set_target_properties(Semantic.Native PROPERTIES PREFIX "")
+    semantic_copy_runtime(Semantic.Native)
 endif()
-foreach(check Semantic.HybridChecks Semantic.HybridSmoke Semantic.DownloadChecks)
+
+# Checks and DownloadChecks compile Semantic.cpp to reach its internals; Smoke uses the C API.
+enable_testing()
+set(tests "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+add_executable(Semantic.Checks tests/Checks.cpp)
+add_executable(Semantic.DownloadChecks tests/DownloadChecks.cpp)
+foreach(check Semantic.Checks Semantic.DownloadChecks)
+    target_link_libraries(${check} PRIVATE Semantic.Dependencies)
+    target_compile_definitions(${check} PRIVATE SEMANTIC_NATIVE_BUILD)
+endforeach()
+add_executable(Semantic.Smoke tests/Smoke.cpp)
+target_link_libraries(Semantic.Smoke PRIVATE Semantic.Native)
+foreach(check Semantic.Checks Semantic.DownloadChecks Semantic.Smoke)
     set_target_properties(${check} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES)
     target_compile_options(${check} PRIVATE -UNDEBUG) # Checks rely on assert in every configuration.
 endforeach()
-enable_testing()
-add_test(NAME Semantic.CoreChecks
-    COMMAND Semantic.CoreChecks "${CMAKE_CURRENT_SOURCE_DIR}/experiments/phrases.tsv")
-add_test(NAME Semantic.HybridChecks COMMAND Semantic.HybridChecks)
-set(SEMANTIC_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/embeddinggemma-2-Q8_0.gguf"
-    CACHE FILEPATH "Local EmbeddingGemma2 GGUF for the phrase experiment")
-if(EXISTS "${SEMANTIC_MODEL}")
-    add_executable(Semantic.PoolingChecks experiments/PoolingChecks.cpp)
-    target_link_libraries(Semantic.PoolingChecks PRIVATE Semantic llama)
-    add_test(NAME Semantic.PoolingChecks COMMAND Semantic.PoolingChecks "${SEMANTIC_MODEL}")
-    add_test(NAME Semantic.PhraseMatch
-        COMMAND Semantic.PhraseMatch "${SEMANTIC_MODEL}" "${CMAKE_CURRENT_SOURCE_DIR}/experiments/phrases.tsv")
-    # Retrieval and preparation through the C API; hybrid turns run when SEMANTIC_HYBRID_CONFIG is set.
-    add_test(NAME Semantic.HybridSmoke
-        COMMAND Semantic.HybridSmoke "${SEMANTIC_MODEL}" "${CMAKE_CURRENT_SOURCE_DIR}/experiments/tagged-phrases.tsv")
-endif()
+add_test(NAME Semantic.Checks COMMAND Semantic.Checks "${tests}/phrases.tsv" "${tests}/tagged-phrases.tsv")
 
-# C++ consumers only need the header; .NET is required only for this smoke check.
-option(SEMANTIC_BUILD_INTEROP_SMOKE "Build the C# interop smoke check" OFF)
-if(SEMANTIC_BUILD_INTEROP_SMOKE)
-    find_program(DOTNET_EXECUTABLE dotnet REQUIRED)
-    set(SMOKE_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/smoke/$<CONFIG>")
-    add_custom_target(Semantic.InteropSmoke ALL
-        COMMAND "${DOTNET_EXECUTABLE}" build
-            "${CMAKE_CURRENT_SOURCE_DIR}/experiments/InteropSmoke/Semantic.InteropSmoke.csproj"
-            --configuration "$<IF:$<CONFIG:Debug>,Debug,Release>"
-            --output "${SMOKE_OUTPUT_DIR}"
-            --nologo
-            --disable-build-servers
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_FILE:Semantic.Native>" "${SMOKE_OUTPUT_DIR}/"
-        DEPENDS Semantic.Native
-        VERBATIM
-    )
-    add_test(NAME Semantic.InteropSmoke
-        COMMAND "${DOTNET_EXECUTABLE}" "${SMOKE_OUTPUT_DIR}/Semantic.InteropSmoke.dll"
-    )
-    if(EXISTS "${SEMANTIC_MODEL}")
-        add_test(NAME Semantic.ManagedPhraseMatch
-            COMMAND "${DOTNET_EXECUTABLE}" "${SMOKE_OUTPUT_DIR}/Semantic.InteropSmoke.dll"
-                "${SEMANTIC_MODEL}" "${CMAKE_CURRENT_SOURCE_DIR}/experiments/phrases.tsv")
-    endif()
+set(SEMANTIC_MODEL "${CMAKE_CURRENT_SOURCE_DIR}/models/embeddinggemma-2-Q8_0.gguf"
+    CACHE FILEPATH "Local EmbeddingGemma2 GGUF for the model-backed smoke test")
+if(EXISTS "${SEMANTIC_MODEL}")
+    # Retrieval and preparation through the C API; hybrid turns run when SEMANTIC_HYBRID_CONFIG is set.
+    add_test(NAME Semantic.Smoke COMMAND Semantic.Smoke "${SEMANTIC_MODEL}" "${tests}/tagged-phrases.tsv")
 endif()
