@@ -51,4 +51,4 @@ Preparation downloads the chat model if it is missing, loads both models and emb
 
 - `scripts/sync-unity-plugins.sh <UnityProject>` installs the latest green plugins for both platforms, with stable `.meta` files.
 - `scripts/build-plugin.sh [UnityProject]` builds and tests locally on macOS.
-- `scripts\build-plugin.ps1 [-UnityProject ...]` builds and tests locally on Windows (Visual Studio 2022, Vulkan SDK, CUDA 12.x).
+- `scripts\build-plugin.ps1 [-UnityProject ...] [-NoCuda]` builds and tests locally on Windows; it needs only Visual Studio 2022.
