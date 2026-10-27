@@ -47,7 +47,7 @@ Preparation downloads the chat model if it is missing, loads both models and emb
 
 ## Building and CI
 
-`.github/workflows/native.yml` builds both platforms on every push and pull request. It runs the model-free checks, retrieval/prepare/hybrid smoke tests through the C API (with a small Qwen3 model that Semantic downloads itself) and a resumable-download check, then publishes the plugins as artifacts. CI runners have no GPU, so CUDA and Vulkan are compiled but only the CPU path is exercised on Windows.
+`.github/workflows/native.yml` compiles both platforms when native sources change and runs only the model-free checks; nothing is downloaded. It publishes the plugins as artifacts. CUDA and Vulkan are compile-checked only. Model-backed checks (retrieval, prepare, download, hybrid smoke) run locally: `ctest` with the embedding model present, and `Semantic.HybridSmoke` with `SEMANTIC_HYBRID_CONFIG`/`SEMANTIC_HYBRID_BANK` for hybrid turns.
 
 - `scripts/sync-unity-plugins.sh <UnityProject>` installs the latest green plugins for both platforms, with stable `.meta` files.
 - `scripts/build-plugin.sh [UnityProject]` builds and tests locally on macOS.
