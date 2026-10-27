@@ -11,7 +11,11 @@ model_dir="${1:-"$repo_dir/models"}"
 mkdir -p "$model_dir"
 destination="$model_dir/$filename"
 
-verify() { printf '%s  %s\n' "$checksum" "$1" | shasum -a 256 -c -; }
+# Git Bash on Windows has sha256sum but not shasum.
+verify() {
+    if command -v shasum >/dev/null; then printf '%s  %s\n' "$checksum" "$1" | shasum -a 256 -c -
+    else printf '%s  %s\n' "$checksum" "$1" | sha256sum -c -; fi
+}
 if [[ -e "$destination" ]]; then
     verify "$destination"
     exit 0

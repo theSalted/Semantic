@@ -1,46 +1,47 @@
 name: native
 
-# Builds and checks the Semantic native plugin on every supported platform, then publishes the
-# plugin files Unity consumes (scripts/sync-unity-plugins.sh downloads them).
+# Compiles the Semantic native plugin for each platform and publishes the files Unity consumes
+# (scripts/sync-unity-plugins.sh downloads them). Kept minimal on purpose: no model downloads;
+# only the model-free checks run. Model-backed checks run locally via ctest.
 on:
   push:
     branches: [main]
+    paths:
+      - 'Semantic.hpp'
+      - 'SemanticHybrid.hpp'
+      - 'bindings/*.cpp'
+      - 'bindings/*.h'
+      - 'bindings/*.hpp'
+      - 'experiments/*.cpp'
+      - 'CMakeLists.txt'
+      - '.github/workflows/native.yml'
   pull_request:
+    paths:
+      - 'Semantic.hpp'
+      - 'SemanticHybrid.hpp'
+      - 'bindings/*.cpp'
+      - 'bindings/*.h'
+      - 'bindings/*.hpp'
+      - 'experiments/*.cpp'
+      - 'CMakeLists.txt'
+      - '.github/workflows/native.yml'
   workflow_dispatch:
 
 concurrency:
   group: native-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  EMBEDDING_REVISION: bfcd298762cc34d0357ece5ebdd31791a3a374d8
-  # Small chat model with the same format as the shipped one; exercises download, prepare and hybrid.
-  CI_LLM_URL: https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/23749fefcc72300e3a2ad315e1317431b06b590a/Qwen3-0.6B-Q8_0.gguf
-
 jobs:
   macos:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/cache@v6
-        with:
-          path: models/embeddinggemma-2-Q8_0.gguf
-          key: embeddinggemma-2-${{ env.EMBEDDING_REVISION }}
-      - name: Embedding model
-        run: scripts/download-model.sh
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSEMANTIC_PORTABLE=ON -DCMAKE_OSX_ARCHITECTURES=arm64
       - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Checks
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSEMANTIC_PORTABLE=ON -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build --config Release --parallel
+      - name: Model-free checks
         run: ctest --test-dir build -C Release --output-on-failure
-      - name: Hybrid smoke (downloads the CI chat model through Semantic)
-        env:
-          SEMANTIC_HYBRID_CONFIG: ${{ github.workspace }}/experiments/hybrid-ci.json
-          SEMANTIC_HYBRID_BANK: ${{ github.workspace }}/experiments/tagged-phrases.tsv
-        run: build/Semantic.HybridSmoke models/embeddinggemma-2-Q8_0.gguf experiments/tagged-phrases.tsv
-      - name: Resumable download
-        run: build/Semantic.DownloadChecks "$CI_LLM_URL" "$HOME/Library/Caches/Semantic/models/Qwen3-0.6B-Q8_0.gguf" "$RUNNER_TEMP/download-checks"
       - uses: actions/upload-artifact@v7
         with:
           name: semantic-plugin-macos-arm64
@@ -63,30 +64,12 @@ jobs:
           cuda: '12.9.1'
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-      - uses: actions/cache@v6
-        with:
-          path: models/embeddinggemma-2-Q8_0.gguf
-          key: embeddinggemma-2-${{ env.EMBEDDING_REVISION }}
-      - name: Embedding model
-        shell: bash
-        run: scripts/download-model.sh
-      - name: Configure
-        run: >
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-          -DSEMANTIC_PORTABLE=ON -DSEMANTIC_VULKAN=ON -DSEMANTIC_CUDA=ON
-          "-DCMAKE_CUDA_ARCHITECTURES=61-real;75-real;86-real;89-real;89-virtual"
       - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Checks
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSEMANTIC_PORTABLE=ON -DSEMANTIC_VULKAN=ON -DSEMANTIC_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=61-real;75-real;86-real;89-real;89-virtual"
+          cmake --build build --config Release --parallel
+      - name: Model-free checks
         run: ctest --test-dir build -C Release --output-on-failure
-      # The runner has no GPU, so these run on the best CPU variant; GPU backends are build-checked.
-      - name: Hybrid smoke (downloads the CI chat model through Semantic)
-        env:
-          SEMANTIC_HYBRID_CONFIG: ${{ github.workspace }}\experiments\hybrid-ci.json
-          SEMANTIC_HYBRID_BANK: ${{ github.workspace }}\experiments\tagged-phrases.tsv
-        run: build\bin\Release\Semantic.HybridSmoke.exe models\embeddinggemma-2-Q8_0.gguf experiments\tagged-phrases.tsv
-      - name: Resumable download
-        run: build\bin\Release\Semantic.DownloadChecks.exe "$env:CI_LLM_URL" "$env:LOCALAPPDATA\Semantic\models\Qwen3-0.6B-Q8_0.gguf" "$env:RUNNER_TEMP\download-checks"
       - name: Collect plugin
         shell: bash
         run: |
