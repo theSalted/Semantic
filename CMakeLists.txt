@@ -12,24 +12,34 @@ target_compile_features(Semantic INTERFACE cxx_std_17)
 
 # Distributable plugin builds (CI, Unity) avoid host-specific CPU features.
 option(SEMANTIC_PORTABLE "Build for redistribution rather than this machine's CPU" OFF)
-option(SEMANTIC_VULKAN "Windows: build the Vulkan backend (needs the Vulkan SDK)" OFF)
-option(SEMANTIC_CUDA "Windows: build the CUDA backend (needs the CUDA Toolkit)" OFF)
+option(SEMANTIC_CUDA "Windows: include the CUDA backend and runtime (~1.15 GB)" ON)
 
-# Compile the pinned backend into the bridge; keep downloads inside the build tree.
+# llama.cpp release b11560: the previous source pin minus one Hexagon-only commit. macOS builds
+# it from source into one static dylib; Windows uses the release's prebuilt DLLs unchanged.
+set(SEMANTIC_LLAMA_TAG b11560)
+set(SEMANTIC_LLAMA_COMMIT b13a93a3d5fa44b57899d86467a4de463e7415a7)
+set(SEMANTIC_LLAMA_SOURCE_SHA256 3d89883ba9020aef07c14371f884564f4b3177b9ff8c442b34de276f817ef835)
 include(FetchContent)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+FetchContent_Declare(llama_cpp
+    URL https://github.com/ggml-org/llama.cpp/archive/${SEMANTIC_LLAMA_COMMIT}.tar.gz
+    URL_HASH SHA256=${SEMANTIC_LLAMA_SOURCE_SHA256}
+)
 if(WIN32)
-    # Backends are separate DLLs chosen at runtime: CUDA or Vulkan when the machine has a
-    # supported GPU, otherwise the fastest CPU variant it can run.
-    set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
-    # One folder for every DLL and check, as the plugin folder will be.
+    # Headers and vendored JSON only; nothing in ggml/llama is compiled on Windows.
+    # One output folder for the plugin, its runtime DLLs and the checks that load them.
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-    set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
-    set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
-    set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
-    set(GGML_VULKAN ${SEMANTIC_VULKAN} CACHE BOOL "" FORCE)
-    set(GGML_CUDA ${SEMANTIC_CUDA} CACHE BOOL "" FORCE)
+    FetchContent_GetProperties(llama_cpp)
+    if(NOT llama_cpp_POPULATED)
+        cmake_policy(PUSH)
+        if(POLICY CMP0169)
+            cmake_policy(SET CMP0169 OLD)
+        endif()
+        FetchContent_Populate(llama_cpp)
+        cmake_policy(POP)
+    endif()
+    include(cmake/LlamaRelease.cmake)
 else()
     set(BUILD_SHARED_LIBS OFF)
     if(SEMANTIC_PORTABLE)
@@ -40,18 +50,14 @@ else()
         endforeach()
         set(GGML_CPU_ARM_ARCH armv8-a CACHE STRING "" FORCE)
     endif()
+    set(LLAMA_BUILD_COMMON OFF)
+    set(LLAMA_BUILD_TESTS OFF)
+    set(LLAMA_BUILD_TOOLS OFF)
+    set(LLAMA_BUILD_EXAMPLES OFF)
+    set(LLAMA_BUILD_SERVER OFF)
+    set(LLAMA_BUILD_APP OFF)
+    FetchContent_MakeAvailable(llama_cpp)
 endif()
-set(LLAMA_BUILD_COMMON OFF)
-set(LLAMA_BUILD_TESTS OFF)
-set(LLAMA_BUILD_TOOLS OFF)
-set(LLAMA_BUILD_EXAMPLES OFF)
-set(LLAMA_BUILD_SERVER OFF)
-set(LLAMA_BUILD_APP OFF)
-FetchContent_Declare(llama_cpp
-    URL https://github.com/ggml-org/llama.cpp/archive/e937b17a2df081e9c7ae380f0dab4341c1585bce.tar.gz
-    URL_HASH SHA256=930c02443621a78a5397db0dcc93e15a368760e39222bac68aa08c2d8575f585
-)
-FetchContent_MakeAvailable(llama_cpp)
 
 add_library(Semantic.Native SHARED bindings/Semantic.Native.cpp)
 # nlohmann/json ships in llama.cpp's vendor tree; no separate dependency.
@@ -62,6 +68,7 @@ if(WIN32)
     target_link_libraries(Semantic.Native PRIVATE winhttp)
     target_compile_definitions(Semantic.Native PRIVATE SEMANTIC_BACKEND_DL)
     set_target_properties(Semantic.Native PROPERTIES PREFIX "")
+    semantic_copy_runtime(Semantic.Native)
 else()
     find_package(CURL REQUIRED)
     target_link_libraries(Semantic.Native PRIVATE CURL::libcurl)

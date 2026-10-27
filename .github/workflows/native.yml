@@ -14,6 +14,7 @@ on:
       - 'bindings/*.hpp'
       - 'experiments/*.cpp'
       - 'CMakeLists.txt'
+      - 'cmake/**'
       - '.github/workflows/native.yml'
   pull_request:
     paths:
@@ -24,6 +25,7 @@ on:
       - 'bindings/*.hpp'
       - 'experiments/*.cpp'
       - 'CMakeLists.txt'
+      - 'cmake/**'
       - '.github/workflows/native.yml'
   workflow_dispatch:
 
@@ -52,21 +54,14 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
-      - uses: jakoch/install-vulkan-sdk-action@v1.7.0
+      # Prebuilt llama.cpp release DLLs (CPU variants, Vulkan, CUDA); only Semantic.Native compiles.
+      - uses: actions/cache@v6
         with:
-          vulkan_version: latest
-          install_runtime: true
-          cache: true
-          stripdown: true
-      # 12.x keeps Pascal (GTX 10-series) support; CUDA 13 dropped it.
-      - uses: Jimver/cuda-toolkit@v0.2.36
-        with:
-          cuda: '12.9.1'
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          path: build/llama-release
+          key: llama-release-b11560-win-x64-cuda
       - name: Build
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSEMANTIC_PORTABLE=ON -DSEMANTIC_VULKAN=ON -DSEMANTIC_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=61-real;75-real;86-real;89-real;89-virtual"
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSEMANTIC_PORTABLE=ON
           cmake --build build --config Release --parallel
       - name: Model-free checks
         run: ctest --test-dir build -C Release --output-on-failure
@@ -74,9 +69,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p plugin
-          cp build/bin/Release/Semantic.Native.dll build/bin/Release/llama.dll build/bin/Release/ggml*.dll plugin/
-          # NVIDIA's redistributable runtime for the CUDA backend.
-          cp "$CUDA_PATH/bin/cudart64_12.dll" "$CUDA_PATH/bin/cublas64_12.dll" "$CUDA_PATH/bin/cublasLt64_12.dll" plugin/
+          cp build/bin/Release/*.dll plugin/
           ls -l plugin
       - uses: actions/upload-artifact@v7
         with:

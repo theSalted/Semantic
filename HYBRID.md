@@ -43,7 +43,7 @@ Preparation downloads the chat model if it is missing, loads both models and emb
 ## Platforms
 
 - **macOS (Apple silicon):** one static dylib. The chat model runs on Metal; the embedding model stays on the CPU, so retrieval results are unchanged.
-- **Windows x64:** `Semantic.Native.dll` plus `llama.dll`, `ggml*.dll` and the CUDA runtime DLLs. Backends load at runtime from the plugin folder. The chat model is offloaded to CUDA (NVIDIA) or Vulkan (any GPU) when available, otherwise it runs on the fastest CPU variant the machine supports. If a GPU lacks the memory for the whole model, lower `gpu_layers`.
+- **Windows x64:** `Semantic.Native.dll` plus llama.cpp's official prebuilt release DLLs (tag `b11560`, SHA-256 verified): `llama.dll`, `ggml*.dll`, all CPU variants, Vulkan and CUDA with its runtime (CUDA adds ~1.15 GB; configure with `-DSEMANTIC_CUDA=OFF` to leave it out). Only `Semantic.Native.dll` is compiled. Backends load at runtime from the plugin folder: CUDA (NVIDIA) or Vulkan (any GPU) when available, otherwise the fastest CPU variant. If a GPU lacks the memory for the whole model, lower `gpu_layers`.
 
 ## Building and CI
 
