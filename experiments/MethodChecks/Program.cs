@@ -5,6 +5,7 @@ using System.Text.Json;
 using Semantic;
 
 var root = Path.GetFullPath(args[0]);
+if (args.Length > 1 && args[1] == "--config-only") { await ModelConfigChecks.Run(root); return; }
 NativeLibrary.SetDllImportResolver(typeof(PhraseMatcher).Assembly, (name, _, _) => name == "Semantic.Native" ? NativeLibrary.Load(Path.Combine(root, "build/libSemantic.Native.dylib")) : IntPtr.Zero);
 var destination = Path.Combine(root, "artifacts/llm_methods"); Directory.CreateDirectory(destination);
 var bankPath = Path.Combine(destination, "contract-bank.tsv");
@@ -106,7 +107,7 @@ sealed class FakeLlm : HttpMessageHandler
         object result;
         switch (request.RequestUri!.AbsolutePath)
         {
-            case "/v1/models": result = new { data = new[] { new { id = LocalMethods.ModelId } } }; break;
+            case "/v1/models": result = new { data = new[] { new { id = LocalModel.FourteenB.Alias } } }; break;
             case "/props": result = new { model_path = "Qwen3-14B-Q4_K_M.gguf", default_generation_settings = new { n_ctx = 1024 }, build_info = "contract fake" }; break;
             case "/apply-template":
                 LastRequest = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(ct));

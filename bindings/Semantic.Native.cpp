@@ -1,17 +1,49 @@
 #include "Semantic.Native.h"
 #include "Semantic.hpp"
+#include "SemanticHybrid.hpp"
+#include "SemanticDownload.hpp"
 #include "llama.h"
+#include "ggml-backend.h"
 
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <set>
+#include <thread>
 
 namespace
 {
     thread_local std::string last_error;
 
+#if defined(SEMANTIC_BACKEND_DL)
+    // Directory of this plugin; GPU and CPU-variant backends ship beside it.
+    std::string PluginDirectory()
+    {
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&PluginDirectory), &module))
+            throw std::runtime_error("Cannot locate the Semantic plugin.");
+        std::wstring path(MAX_PATH, L'\0');
+        DWORD length;
+        while ((length = GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size()))) == path.size()) path.resize(path.size() * 2);
+        path.resize(length);
+        return std::filesystem::path(path).parent_path().u8string();
+    }
+#endif
+
     struct BackendLifetime
     {
-        BackendLifetime() { llama_backend_init(); }
+        BackendLifetime()
+        {
+#if defined(SEMANTIC_BACKEND_DL)
+            // Registers every backend this machine can run (CUDA, Vulkan, best CPU variant);
+            // the chat model is then offloaded to the best available GPU, else runs on CPU.
+            ggml_backend_load_all_from_path(PluginDirectory().c_str());
+            if (ggml_backend_dev_count() == 0) throw std::runtime_error("No compute backends were found beside Semantic.Native.");
+#endif
+            llama_backend_init();
+        }
         ~BackendLifetime() { llama_backend_free(); }
     };
 
@@ -19,6 +51,190 @@ namespace
     {
         static BackendLifetime lifetime;
     }
+
+    bool EndsWith(const std::string& text, const std::string& suffix)
+    {
+        return text.size() >= suffix.size() && Semantic::Hybrid::Lower(text.substr(text.size() - suffix.size())) == suffix;
+    }
+
+    std::vector<llama_token> TokenizeText(const llama_vocab* vocab, const std::string& text, bool parse_special)
+    {
+        if (text.size() > static_cast<std::size_t>(INT32_MAX)) throw std::invalid_argument("Text is too large.");
+        const int count = -llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()), nullptr, 0, false, parse_special);
+        std::vector<llama_token> tokens(std::max(count, 0));
+        if (count > 0 && llama_tokenize(vocab, text.data(), static_cast<int32_t>(text.size()), tokens.data(), count, false, parse_special) != count)
+            throw std::runtime_error("Tokenization failed.");
+        return tokens;
+    }
+
+    class LlmEngine;
+
+    // GPU backends abort at process exit if buffers are still alive, and engines may still be
+    // held then (a prepared model is kept warm; a host may skip disposal). This registry is
+    // created after the backends, so it is destroyed first and releases any live engine.
+    class EngineRegistry
+    {
+    public:
+        static EngineRegistry& Instance()
+        {
+            InitializeBackend();
+            ggml_backend_dev_count(); // Construct ggml's device registry before this object.
+            static EngineRegistry registry;
+            return registry;
+        }
+        void Add(LlmEngine* engine) { std::lock_guard<std::mutex> lock(gate); live.insert(engine); }
+        void Remove(LlmEngine* engine) { std::lock_guard<std::mutex> lock(gate); live.erase(engine); }
+        ~EngineRegistry();
+
+    private:
+        std::mutex gate;
+        std::set<LlmEngine*> live;
+    };
+
+    // One loaded chat model per path, shared by every hybrid matcher in the process.
+    // A new conversation is a new matcher; while another matcher holds the engine, no reload happens.
+    class LlmEngine
+    {
+    public:
+        // Downloads the model on first use when it is neither bundled nor cached.
+        static std::shared_ptr<LlmEngine> Acquire(const std::string& bundled, const std::string& url, int gpu_layers,
+            const Semantic::Download::Progress& progress)
+        {
+            static std::mutex cache_gate;
+            static std::map<std::string, std::weak_ptr<LlmEngine>> cache;
+            std::lock_guard<std::mutex> lock(cache_gate);
+            const auto path = Semantic::Download::Ensure(std::filesystem::u8path(bundled), url, progress);
+            if (auto engine = cache[path].lock()) return engine;
+            auto engine = std::make_shared<LlmEngine>(path, gpu_layers);
+            cache[path] = engine;
+            return engine;
+        }
+
+        LlmEngine(const std::string& path, int gpu_layers)
+        {
+            if (!std::ifstream(std::filesystem::u8path(path))) throw std::runtime_error("Cannot open LLM model: " + path);
+            InitializeBackend();
+            auto model_params = llama_model_default_params();
+            model_params.n_gpu_layers = gpu_layers;
+            model.reset(llama_model_load_from_file(path.c_str(), model_params));
+            if (!model) throw std::runtime_error("Could not load the LLM model.");
+            const char* chat_template = llama_model_chat_template(model.get(), nullptr);
+            if (!chat_template || std::string(chat_template).find("<|im_start|>") == std::string::npos)
+                throw std::runtime_error("Hybrid mode expects a ChatML chat model such as Qwen3.");
+            vocab = llama_model_get_vocab(model.get());
+
+            auto params = llama_context_default_params();
+            params.n_ctx = static_cast<uint32_t>(std::min(8192, llama_model_n_ctx_train(model.get())));
+            params.n_batch = params.n_ubatch = 512;
+            params.n_seq_max = 1;
+            params.n_threads = params.n_threads_batch = 8;
+            context.reset(llama_init_from_model(model.get(), params));
+            if (!context) throw std::runtime_error("Could not create the LLM context.");
+            context_limit = static_cast<int>(llama_n_ctx(context.get()));
+            EngineRegistry::Instance().Add(this);
+        }
+
+        ~LlmEngine() { EngineRegistry::Instance().Remove(this); }
+
+        // Frees model memory at process exit. A generation still running then keeps its resources.
+        void Release()
+        {
+            std::unique_lock<std::mutex> lock(gate, std::try_to_lock);
+            if (!lock) return;
+            context.reset();
+            model.reset();
+        }
+
+        std::vector<llama_token> Prompt(const std::string& system, const std::string& user) const
+        {
+            // Scaffolding is parsed for special tokens; dialogue content never is.
+            std::vector<llama_token> tokens;
+            for (const auto& [text, special] : std::vector<std::pair<std::string, bool>>{
+                {"<|im_start|>system\n", true}, {system, false}, {"<|im_end|>\n<|im_start|>user\n", true}, {user, false},
+                {"<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", true}})
+            {
+                const auto part = TokenizeText(vocab, text, special);
+                tokens.insert(tokens.end(), part.begin(), part.end());
+            }
+            return tokens;
+        }
+
+        // Greedy, grammar-constrained decoding. Throws unless the model reaches end-of-generation.
+        std::string Generate(const std::vector<llama_token>& prompt, const std::string& grammar, int max_tokens)
+        {
+            std::lock_guard<std::mutex> lock(gate);
+            std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(llama_sampler_chain_init(llama_sampler_chain_default_params()), llama_sampler_free);
+            auto* constrained = llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+            if (!constrained) throw std::runtime_error("Invalid hybrid decoding grammar.");
+            llama_sampler_chain_add(sampler.get(), constrained);
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_greedy());
+
+            // Reuse the KV cache for the shared prefix (system text and profile are stable across turns).
+            std::size_t reuse = 0;
+            while (reuse < cached.size() && reuse < prompt.size() && cached[reuse] == prompt[reuse]) ++reuse;
+            reuse = std::min(reuse, prompt.size() - 1);
+            auto* memory = llama_get_memory(context.get());
+            if (!llama_memory_seq_rm(memory, 0, static_cast<llama_pos>(reuse), -1)) { llama_memory_clear(memory, true); reuse = 0; }
+            cached.assign(prompt.begin(), prompt.begin() + reuse);
+            for (std::size_t at = reuse; at < prompt.size(); at += 512)
+            {
+                std::vector<llama_token> chunk(prompt.begin() + at, prompt.begin() + std::min(prompt.size(), at + 512));
+                Decode(chunk);
+            }
+
+            std::string output;
+            for (int produced = 0; produced < max_tokens; ++produced)
+            {
+                const llama_token token = llama_sampler_sample(sampler.get(), context.get(), -1);
+                if (llama_vocab_is_eog(vocab, token)) return output;
+                char piece[256];
+                const int length = llama_token_to_piece(vocab, token, piece, sizeof piece, 0, false);
+                if (length < 0) throw std::runtime_error("Could not render a generated token.");
+                output.append(piece, length);
+                std::vector<llama_token> next{token};
+                Decode(next);
+            }
+            throw std::runtime_error("The model did not finish a complete decision. Nothing was committed.");
+        }
+
+        int ContextLimit() const { return context_limit; }
+
+    private:
+        void Decode(std::vector<llama_token>& tokens)
+        {
+            if (llama_decode(context.get(), llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()))) != 0)
+            {
+                cached.clear();
+                llama_memory_clear(llama_get_memory(context.get()), true);
+                throw std::runtime_error("LLM evaluation failed.");
+            }
+            cached.insert(cached.end(), tokens.begin(), tokens.end());
+        }
+
+        std::unique_ptr<llama_model, decltype(&llama_model_free)> model{nullptr, llama_model_free};
+        std::unique_ptr<llama_context, decltype(&llama_free)> context{nullptr, llama_free};
+        const llama_vocab* vocab = nullptr;
+        int context_limit = 0;
+        std::mutex gate;
+        std::vector<llama_token> cached;
+    };
+
+    EngineRegistry::~EngineRegistry()
+    {
+        std::lock_guard<std::mutex> lock(gate);
+        for (auto* engine : live) engine->Release();
+    }
+
+    // Conversation state lives inside a hybrid matcher; destroying the matcher ends the conversation.
+    struct HybridState
+    {
+        Semantic::Hybrid::Config config;
+        std::shared_ptr<LlmEngine> llm;
+        std::unique_ptr<Semantic::Hybrid::FastPath> fast_path;
+        std::vector<Semantic::Exchange> history;
+        std::vector<Semantic::Hybrid::PlayerFact> memory;
+        std::string response; // Generated text is owned here until the next match.
+    };
 }
 
 struct MatcherState
@@ -27,22 +243,34 @@ struct MatcherState
     std::unique_ptr<Semantic::Catalog> catalog;
     std::unique_ptr<llama_model, decltype(&llama_model_free)> model{nullptr, llama_model_free};
     std::unique_ptr<llama_context, decltype(&llama_free)> context{nullptr, llama_free};
+    std::unique_ptr<HybridState> hybrid;
     int max_tokens;
     int model_tokens;
+    static constexpr int reserved_output_tokens = 512;
 
+    // `model_path` is the embedding GGUF (retrieval mode) or a hybrid-mode JSON config.
     MatcherState(const std::string& model_path, const std::string& bank_path, int budget,
-                 std::unique_ptr<Semantic::Catalog> entries = nullptr)
+                 std::unique_ptr<Semantic::Catalog> entries = nullptr, const Semantic::Download::Progress& progress = {})
         : phrases(entries ? std::vector<Semantic::Phrase>{} : Semantic::LoadPhraseBank(bank_path)),
           catalog(std::move(entries))
     {
-        if (!std::ifstream(std::filesystem::u8path(model_path)))
-            throw std::runtime_error("Cannot open model: " + model_path);
+        std::string embedding_path = model_path;
+        if (EndsWith(model_path, ".json"))
+        {
+            if (catalog) throw std::invalid_argument("Hybrid mode uses a phrase bank, not a catalog.");
+            hybrid = std::make_unique<HybridState>();
+            hybrid->config = Semantic::Hybrid::LoadConfig(model_path);
+            embedding_path = hybrid->config.embedding_model;
+            hybrid->fast_path = std::make_unique<Semantic::Hybrid::FastPath>(hybrid->config.fast_path, phrases);
+        }
+        if (!std::ifstream(std::filesystem::u8path(embedding_path)))
+            throw std::runtime_error("Cannot open model: " + embedding_path);
         InitializeBackend();
         auto model_params = llama_model_default_params();
         ggml_backend_dev_t cpu_only[] = {nullptr};
         model_params.devices = cpu_only;
         model_params.n_gpu_layers = 0; // CPU first: no float16 activation path for EmbeddingGemma2.
-        model.reset(llama_model_load_from_file(model_path.c_str(), model_params));
+        model.reset(llama_model_load_from_file(embedding_path.c_str(), model_params));
         if (!model) throw std::runtime_error("Could not load the embedding model.");
         char architecture[64]{};
         llama_model_meta_val_str(model.get(), "general.architecture", architecture, sizeof architecture);
@@ -69,6 +297,7 @@ struct MatcherState
         if (!context) throw std::runtime_error("Could not create the embedding context.");
         if (catalog) catalog->EmbedKeys([this](const std::string& text) { return Embed(text); });
         else Semantic::EmbedPrompts(phrases, [this](const std::string& text) { return Embed(text); });
+        if (hybrid) hybrid->llm = LlmEngine::Acquire(hybrid->config.llm_model, hybrid->config.llm_url, hybrid->config.gpu_layers, progress);
     }
 
     std::vector<llama_token> Tokenize(const std::string& input)
@@ -109,7 +338,151 @@ struct MatcherState
         if (!values) throw std::runtime_error("Model returned no pooled embedding.");
         return {values, values + llama_model_n_embd_out(model.get())};
     }
+
+    // Retrieval shortlist, then fast path, memory constraint or LLM select-or-generate.
+    // The turn is committed to history only after a valid reply exists.
+    const Semantic::Phrase* HybridMatch(const std::string& raw_input, float& score)
+    {
+        namespace H = Semantic::Hybrid;
+        auto& state = *hybrid;
+        const auto input = H::Trim(raw_input);
+        H::ValidateText(input, 1000, "Input");
+        H::Request request{input, state.history, H::Shortlist(phrases, Embed(input),
+            static_cast<std::size_t>(state.config.candidates)), std::nullopt, std::nullopt};
+        auto memory = state.memory;
+        if (state.config.session_memory)
+        {
+            memory = H::AdvanceMemory(state.memory, input);
+            request.memory = memory;
+            request.required = H::Recall(input, memory);
+            if (!request.required) request.required = H::NameAcknowledgement(input, state.memory, memory);
+        }
+
+        H::Decision decision;
+        const auto fast = request.required ? H::FastPathDecision{false, "memory", {}}
+            : state.fast_path->Evaluate(input, state.history, request.candidates, phrases);
+        if (fast.accepted) decision = {phrases[*fast.index].response, fast.index};
+        else
+        {
+            const auto system = H::SystemInstruction(request.memory.has_value());
+            std::vector<llama_token> prompt;
+            while (true)
+            {
+                prompt = state.llm->Prompt(system, H::UserContent(state.config.profile, request));
+                if (static_cast<int>(prompt.size()) + reserved_output_tokens <= state.llm->ContextLimit()) break;
+                if (!request.history.empty()) request.history.erase(request.history.begin());
+                else if (request.candidates.size() > 1) request.candidates.pop_back();
+                else throw std::runtime_error("Current query, profile and minimum candidate do not fit the LLM context. Nothing was committed.");
+            }
+            const auto output = state.llm->Generate(prompt, H::Grammar(state.config.profile, request), reserved_output_tokens);
+            decision = H::Validate(state.config.profile, request, output);
+        }
+
+        score = 0;
+        if (decision.index)
+            for (const auto& candidate : request.candidates)
+                if (candidate.index == *decision.index) score = candidate.similarity;
+        state.history.push_back({input, decision.response});
+        TrimHistory(state.history);
+        state.memory = memory;
+        state.response = decision.response;
+        return decision.index ? &phrases[*decision.index] : nullptr;
+    }
+
+    // Retained history shares the embedding window's token budget, oldest exchanges first out.
+    void TrimHistory(std::vector<Semantic::Exchange>& history) const
+    {
+        const auto* vocab = llama_model_get_vocab(model.get());
+        auto cost = [&](const Semantic::Exchange& turn) { return TokenizeText(vocab, turn.user, false).size() + TokenizeText(vocab, turn.character, false).size(); };
+        std::size_t total = 0;
+        for (const auto& turn : history) total += cost(turn);
+        while (history.size() > 1 && total > static_cast<std::size_t>(max_tokens)) { total -= cost(history.front()); history.erase(history.begin()); }
+    }
 };
+
+namespace
+{
+    std::string PathKey(const char* path)
+    {
+        return std::filesystem::absolute(std::filesystem::u8path(path)).lexically_normal().u8string();
+    }
+
+    // Background preparations keyed by (model, bank). Leaked on purpose: detached workers may
+    // still be downloading during static destruction at process exit.
+    class Preparations
+    {
+    public:
+        static Preparations& Instance() { static auto* instance = new Preparations; return *instance; }
+
+        void Start(const std::string& model, const std::string& bank)
+        {
+            std::lock_guard<std::mutex> lock(gate);
+            auto& entry = entries[{model, bank}];
+            if (entry.state == Running || entry.state == Ready) return;
+            entry = {Running, 0, "loading", nullptr, nullptr};
+            std::thread([this, model, bank] { Run(model, bank); }).detach();
+        }
+
+        int Status(const std::string& model, const std::string& bank, float& progress, std::string& stage)
+        {
+            std::lock_guard<std::mutex> lock(gate);
+            const auto found = entries.find({model, bank});
+            if (found == entries.end()) { progress = 0; stage.clear(); return NotStarted; }
+            progress = found->second.progress;
+            stage = found->second.stage;
+            return found->second.state;
+        }
+
+        // Waits for a running preparation; returns its matcher once, or null to build normally.
+        std::shared_ptr<MatcherState> Take(const std::string& model, const std::string& bank)
+        {
+            std::unique_lock<std::mutex> lock(gate);
+            const auto found = entries.find({model, bank});
+            if (found == entries.end()) return nullptr;
+            done.wait(lock, [&] { return found->second.state != Running; });
+            return std::move(found->second.parked);
+        }
+
+    private:
+        enum { Failed = -1, NotStarted = 0, Running = 1, Ready = 2 };
+        struct Entry
+        {
+            int state;
+            float progress;
+            std::string stage;
+            std::shared_ptr<MatcherState> parked; // Fresh conversation for the next CreateMatcher.
+            std::shared_ptr<void> warm;           // Keeps a prepared chat model loaded.
+        };
+
+        void Run(const std::string& model, const std::string& bank)
+        {
+            const std::pair<std::string, std::string> key{model, bank};
+            try
+            {
+                auto state = std::make_shared<MatcherState>(model, bank, 0, nullptr,
+                    [this, key](unsigned long long received, unsigned long long total) {
+                        std::lock_guard<std::mutex> lock(gate);
+                        auto& entry = entries[key];
+                        const bool finished = total && received >= total;
+                        entry.stage = finished ? "loading" : "downloading";
+                        entry.progress = total ? static_cast<float>(static_cast<double>(received) / total) : 0;
+                    });
+                std::lock_guard<std::mutex> lock(gate);
+                entries[key] = {Ready, 1, "ready", state, state->hybrid ? std::shared_ptr<void>(state->hybrid->llm) : nullptr};
+            }
+            catch (const std::exception& e)
+            {
+                std::lock_guard<std::mutex> lock(gate);
+                entries[key] = {Failed, 0, e.what(), nullptr, nullptr};
+            }
+            done.notify_all();
+        }
+
+        std::mutex gate;
+        std::condition_variable done;
+        std::map<std::pair<std::string, std::string>, Entry> entries;
+    };
+}
 
 struct Semantic_Matcher { std::shared_ptr<MatcherState> state; };
 struct Semantic_Session
@@ -132,6 +505,9 @@ Semantic_Matcher* SEMANTIC_CALL Semantic_CreateMatcherWithCapacity(const char* m
     try
     {
         if (!model || !bank) throw std::invalid_argument("Model and bank paths are required.");
+        if (capacity == 0)
+            if (auto prepared = Preparations::Instance().Take(PathKey(model), PathKey(bank)))
+                return new Semantic_Matcher{std::move(prepared)};
         return new Semantic_Matcher{std::make_shared<MatcherState>(model, bank, capacity)};
     }
     catch (const std::exception& e) { last_error = e.what(); }
@@ -176,16 +552,64 @@ void SEMANTIC_CALL Semantic_DestroyMatcher(Semantic_Matcher* matcher)
 
 const char* SEMANTIC_CALL Semantic_Match(Semantic_Matcher* matcher, const char* input, float* score)
 {
+    const char* tag = nullptr;
+    return Semantic_MatchWithTag(matcher, input, score, &tag);
+}
+
+const char* SEMANTIC_CALL Semantic_MatchWithTag(Semantic_Matcher* matcher, const char* input,
+    float* score, const char** emote_tag)
+{
     last_error.clear();
     if (score) *score = 0;
+    if (emote_tag) *emote_tag = nullptr;
     try
     {
-        if (!matcher || !input || !score) throw std::invalid_argument("Matcher, input, and score are required.");
-        return Semantic::BestMatch(matcher->state->phrases, matcher->state->Embed(input), *score).response.c_str();
+        if (!matcher || !input || !score || !emote_tag)
+            throw std::invalid_argument("Matcher, input, score, and emote tag output are required.");
+        auto& state = *matcher->state;
+        if (state.hybrid)
+        {
+            const auto* phrase = state.HybridMatch(input, *score);
+            *emote_tag = phrase ? phrase->emote_tag.c_str() : "";
+            return phrase ? phrase->response.c_str() : state.hybrid->response.c_str();
+        }
+        const auto& phrase = Semantic::BestMatch(state.phrases, state.Embed(input), *score);
+        *emote_tag = phrase.emote_tag.c_str();
+        return phrase.response.c_str();
     }
     catch (const std::exception& e) { last_error = e.what(); }
     catch (...) { last_error = "Could not match input."; }
     return nullptr;
+}
+
+int SEMANTIC_CALL Semantic_Prepare(const char* model, const char* bank)
+{
+    last_error.clear();
+    try
+    {
+        if (!model || !bank) throw std::invalid_argument("Model and bank paths are required.");
+        Preparations::Instance().Start(PathKey(model), PathKey(bank));
+        return 1;
+    }
+    catch (const std::exception& e) { last_error = e.what(); }
+    catch (...) { last_error = "Could not start preparation."; }
+    return 0;
+}
+
+int SEMANTIC_CALL Semantic_PrepareStatus(const char* model, const char* bank, float* progress, const char** stage)
+{
+    thread_local std::string stage_text;
+    float fraction = 0;
+    int state = 0;
+    try
+    {
+        if (model && bank) state = Preparations::Instance().Status(PathKey(model), PathKey(bank), fraction, stage_text);
+        else stage_text.clear();
+    }
+    catch (const std::exception& e) { state = -1; stage_text = e.what(); }
+    if (progress) *progress = fraction;
+    if (stage) *stage = stage_text.c_str();
+    return state;
 }
 
 const char* SEMANTIC_CALL Semantic_LastError()

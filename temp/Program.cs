@@ -27,7 +27,8 @@ NativeLibrary.SetDllImportResolver(typeof(PhraseMatcher).Assembly, (name, _, _) 
 using var bank = new PhraseBank(modelPath, bankPath, catalogPath is not null);
 var modelSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(modelPath)));
 var librarySha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(libraryPath)));
-using var methods = new LocalMethods(CharacterProfile.Load(builder.Configuration["character-profile"]), Path.Combine(root, "models", "Qwen3-14B-Q4_K_M.gguf"));
+var llmModel = LocalModel.Resolve(builder.Configuration["llm-size"]);
+using var methods = new LocalMethods(CharacterProfile.Load(builder.Configuration["character-profile"]), llmModel.ModelPath(root, builder.Configuration["llm-model"]));
 var app = builder.Build();
 app.Use(async (context, next) =>
 {

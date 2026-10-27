@@ -1,0 +1,3 @@
+# Banks and fixtures are byte-exact test data on every platform.
+*.tsv text eol=lf
+*.json text eol=lf

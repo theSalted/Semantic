@@ -1,0 +1,78 @@
+name: native
+
+# Compiles the Semantic native plugin for each platform and publishes the files Unity consumes
+# (scripts/sync-unity-plugins.sh downloads them). Kept minimal on purpose: no model downloads;
+# only the model-free checks run. Model-backed checks run locally via ctest.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Semantic.hpp'
+      - 'SemanticHybrid.hpp'
+      - 'bindings/*.cpp'
+      - 'bindings/*.h'
+      - 'bindings/*.hpp'
+      - 'experiments/*.cpp'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/native.yml'
+  pull_request:
+    paths:
+      - 'Semantic.hpp'
+      - 'SemanticHybrid.hpp'
+      - 'bindings/*.cpp'
+      - 'bindings/*.h'
+      - 'bindings/*.hpp'
+      - 'experiments/*.cpp'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/native.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSEMANTIC_PORTABLE=ON -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build --config Release --parallel
+      - name: Model-free checks
+        run: ctest --test-dir build -C Release --output-on-failure
+      - uses: actions/upload-artifact@v7
+        with:
+          name: semantic-plugin-macos-arm64
+          path: build/libSemantic.Native.dylib
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      # Prebuilt llama.cpp release DLLs (CPU variants, Vulkan, CUDA); only Semantic.Native compiles.
+      - uses: actions/cache@v6
+        with:
+          path: build/llama-release
+          key: llama-release-b11560-win-x64-cuda
+      - name: Build
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DSEMANTIC_PORTABLE=ON
+          cmake --build build --config Release --parallel
+      - name: Model-free checks
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Collect plugin
+        shell: bash
+        run: |
+          mkdir -p plugin
+          cp build/bin/Release/*.dll plugin/
+          ls -l plugin
+      - uses: actions/upload-artifact@v7
+        with:
+          name: semantic-plugin-windows-x64
+          path: plugin/
+          if-no-files-found: error

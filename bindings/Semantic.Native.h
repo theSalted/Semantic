@@ -73,10 +73,34 @@ SEMANTIC_API int SEMANTIC_CALL Semantic_HistoryCount(Semantic_Session* session);
 SEMANTIC_API const char* SEMANTIC_CALL Semantic_HistoryText(Semantic_Session* session, int index, int character);
 
 // Paths and text are UTF-8. Use each matcher serially.
+// `model` selects the mode: an embedding .gguf gives retrieval mode (stateless nearest row);
+// a .json config with "mode":"hybrid" gives hybrid mode (one conversation per matcher:
+// retrieval shortlist, then a local chat model selects an authored row or generates a reply).
+// A hybrid config may name a chat model that is not on disk yet; it is downloaded once into
+// the per-user cache. A new conversation is a new matcher; the chat model stays loaded while
+// any matcher or a preparation uses it.
 SEMANTIC_API Semantic_Matcher* SEMANTIC_CALL Semantic_CreateMatcher(const char* model, const char* bank);
 SEMANTIC_API void SEMANTIC_CALL Semantic_DestroyMatcher(Semantic_Matcher* matcher);
-// Response belongs to the matcher and is valid until it is destroyed. NULL means error.
+// Response belongs to the matcher and is valid until it is destroyed (hybrid: until the next
+// match). NULL means error; in hybrid mode a failed turn is not added to the conversation.
 SEMANTIC_API const char* SEMANTIC_CALL Semantic_Match(Semantic_Matcher* matcher, const char* input, float* score);
+// Response and authored tag from the same row. Two-column banks and hybrid generated replies
+// return an empty tag; generated replies also return a zero score. On error returns NULL,
+// sets *emote_tag to NULL and *score to zero.
+SEMANTIC_API const char* SEMANTIC_CALL Semantic_MatchWithTag(Semantic_Matcher* matcher,
+    const char* input, float* score, const char** emote_tag);
+
+// Background preparation, so the first conversation is ready before it is needed: downloads a
+// missing chat model, loads the models and embeds the bank on a worker thread. The next
+// Semantic_CreateMatcher with the same paths takes the prepared matcher instantly, or waits
+// for a preparation still running. A successful preparation keeps its models loaded for the
+// life of the process. Returns 1 when started, already running or ready; 0 on bad arguments.
+// Calling it again after a failure retries (a partial download resumes).
+SEMANTIC_API int SEMANTIC_CALL Semantic_Prepare(const char* model, const char* bank);
+// Returns 0=not started, 1=running, 2=ready, -1=failed. *progress is the download fraction
+// (0..1) while downloading and 1 when ready. *stage is "downloading", "loading", "ready" or
+// the failure message; borrowed until the next call on this thread. Either output may be NULL.
+SEMANTIC_API int SEMANTIC_CALL Semantic_PrepareStatus(const char* model, const char* bank, float* progress, const char** stage);
 // Borrowed error text, valid until the next call on this thread.
 SEMANTIC_API const char* SEMANTIC_CALL Semantic_LastError(void);
 SEMANTIC_API const char* SEMANTIC_CALL Semantic_BackendInfo(void);
